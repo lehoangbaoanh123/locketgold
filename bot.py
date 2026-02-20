@@ -5,7 +5,7 @@ from selenium.webdriver.chrome.options import Options
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8552047398:AAF-V6IOyY__RtOYZIEy6d3R_Z18V_qo1rc"
+BOT_TOKEN = "8552047398:AAHaeVCRxRO41Ze0GrYHmaeBP9-W9_l4JBo"
 
 waiting_user = {}
 
