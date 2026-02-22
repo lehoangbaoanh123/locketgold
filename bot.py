@@ -1,9 +1,9 @@
 import time
+import chromedriver_autoinstaller
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -54,6 +54,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Running...")
 
     try:
+        # ===== FIX SELENIUM =====
+        chromedriver_autoinstaller.install()
+
         chrome_options = Options()
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
@@ -61,10 +64,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
 
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
+        driver = webdriver.Chrome(options=chrome_options)
 
         driver.get("https://hieutrungnguyen.com/hieuoi/")
         time.sleep(3)
@@ -95,9 +95,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("✅ Done!")
 
-    except:
+    except Exception as e:
         users_using.remove(chat_id)
-        await update.message.reply_text("❌ Error!")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
