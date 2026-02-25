@@ -6,13 +6,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
-from threading import Thread
-from flask import Flask
 import asyncio
-import os
 import time
+import os
 
 TOKEN = "8552047398:AAHaeVCRxRO41Ze0GrYHmaeBP9-W9_l4JBo"
 
@@ -27,7 +24,9 @@ def auto_activate(username):
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    options.binary_location = "/usr/bin/chromium"
+
+    driver = webdriver.Chrome(service=Service("/usr/bin/chromedriver"), options=options)
     wait = WebDriverWait(driver, 25)
 
     driver.get("https://hieutrungnguyen.com/hieuoi/")
@@ -83,25 +82,36 @@ async def handle_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(result)
 
 
-# ====== CHẠY BOT Ở THREAD RIÊNG ======
-telegram_app = ApplicationBuilder().token(TOKEN).build()
+# ================== FLASK ==================
+from flask import Flask
+from threading import Thread
 
-telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user))
-
-def run_bot():
-    telegram_app.run_polling()
-
-Thread(target=run_bot).start()
-
-
-# ====== FLASK (ĐỂ RENDER KHÔNG TIMEOUT) ======
 web = Flask(__name__)
 
-@web.route("/")
+@web.route('/')
 def home():
     return "Bot is running!"
 
-if __name__ == "__main__":
+def run_web():
     port = int(os.environ.get("PORT", 10000))
     web.run(host="0.0.0.0", port=port)
+
+Thread(target=run_web).start()
+
+
+# ================== TELEGRAM MAIN ==================
+async def main():
+    telegram_app = ApplicationBuilder().token(TOKEN).build()
+
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user))
+
+    await telegram_app.initialize()
+    await telegram_app.start()
+    await telegram_app.updater.start_polling()
+
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
