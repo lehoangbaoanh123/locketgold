@@ -14,7 +14,7 @@ import asyncio
 import os
 import time
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "8552047398:AAHaeVCRxRO41Ze0GrYHmaeBP9-W9_l4JBo"
 
 
 # ====== HÀM AUTO KÍCH HOẠT ======
