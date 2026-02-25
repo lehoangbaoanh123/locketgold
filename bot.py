@@ -8,10 +8,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+from threading import Thread
+from flask import Flask
 import asyncio
+import os
 import time
 
-TOKEN = "8552047398:AAHaeVCRxRO41Ze0GrYHmaeBP9-W9_l4JBo"
+TOKEN = "YOUR_BOT_TOKEN_HERE"
+
 
 # ====== HÀM AUTO KÍCH HOẠT ======
 def auto_activate(username):
@@ -29,12 +33,10 @@ def auto_activate(username):
     driver.get("https://hieutrungnguyen.com/hieuoi/")
 
     try:
-        # nhập user
         user_box = wait.until(EC.presence_of_element_located((By.TAG_NAME, "input")))
         user_box.clear()
         user_box.send_keys(username)
 
-        # bấm kiểm tra
         check_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Kiểm tra')]")))
         check_btn.click()
 
@@ -46,7 +48,6 @@ def auto_activate(username):
             driver.quit()
             return "❌ User không tồn tại"
 
-        # tìm nút kích hoạt mới
         activate = wait.until(EC.presence_of_element_located(
             (By.XPATH, "//button[.//text()[contains(.,'Kích hoạt')]]")
         ))
@@ -54,7 +55,6 @@ def auto_activate(username):
         driver.execute_script("arguments[0].scrollIntoView({block:'center'});", activate)
         time.sleep(2)
 
-        # click kiểu người thật
         driver.execute_script("""
             let btn = arguments[0];
             btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
@@ -70,7 +70,7 @@ def auto_activate(username):
         return f"⚠️ Lỗi: {e}"
 
 
-# ====== TELEGRAM ======
+# ====== TELEGRAM HANDLERS ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Gửi USER để kích hoạt")
 
@@ -83,9 +83,25 @@ async def handle_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(result)
 
 
-app = ApplicationBuilder().token(TOKEN).build()
+# ====== CHẠY BOT Ở THREAD RIÊNG ======
+telegram_app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user))
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user))
 
-app.run_polling()
+def run_bot():
+    telegram_app.run_polling()
+
+Thread(target=run_bot).start()
+
+
+# ====== FLASK (ĐỂ RENDER KHÔNG TIMEOUT) ======
+web = Flask(__name__)
+
+@web.route("/")
+def home():
+    return "Bot is running!"
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    web.run(host="0.0.0.0", port=port)
