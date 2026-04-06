@@ -13,7 +13,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # 🔐 LẤY TOKEN TỪ ENV (AN TOÀN)
-TOKEN = os.getenv("TOKEN")
+TOKEN = "8758019971:AAFa853BCy_frWLbUrPang31P3cgP8iwyH0"
+
 
 
 # ===== LOGIC GIỮ NGUYÊN =====
