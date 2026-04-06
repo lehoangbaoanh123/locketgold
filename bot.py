@@ -1,117 +1,125 @@
+import time
+import threading
+import os
+
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-import asyncio
-import time
-import os
-
-TOKEN = "8552047398:AAHaeVCRxRO41Ze0GrYHmaeBP9-W9_l4JBo"
+# 🔐 LẤY TOKEN TỪ ENV (AN TOÀN)
+TOKEN = os.getenv("TOKEN")
 
 
-# ====== HÀM AUTO KÍCH HOẠT ======
-def auto_activate(username):
-
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    options.binary_location = "/usr/bin/chromium"
-
-    driver = webdriver.Chrome(service=Service("/usr/bin/chromedriver"), options=options)
-    wait = WebDriverWait(driver, 25)
-
-    driver.get("https://hieutrungnguyen.com/hieuoi/")
-
+# ===== LOGIC GIỮ NGUYÊN =====
+def run_job(email, results):
     try:
-        user_box = wait.until(EC.presence_of_element_located((By.TAG_NAME, "input")))
-        user_box.clear()
-        user_box.send_keys(username)
+        options = Options()
+        options.add_argument("--headless=new")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")  # 🔥 QUAN TRỌNG
+        options.add_argument("--window-size=1920,1080")
 
-        check_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(),'Kiểm tra')]")))
-        check_btn.click()
+        driver = webdriver.Chrome(options=options)
+        wait = WebDriverWait(driver, 15)
 
-        time.sleep(6)
+        driver.get("https://www.facebook.com/login/identify/")
 
-        page = driver.page_source.lower()
+        results[email] = "Đang nhập..."
 
-        if "không tồn tại" in page:
-            driver.quit()
-            return "❌ User không tồn tại"
+        input_box = wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "input[name='email'], input[type='text']")
+            )
+        )
 
-        activate = wait.until(EC.presence_of_element_located(
-            (By.XPATH, "//button[.//text()[contains(.,'Kích hoạt')]]")
-        ))
+        input_box.clear()
+        input_box.send_keys(email)
+        input_box.send_keys(Keys.ENTER)
 
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", activate)
-        time.sleep(2)
+        time.sleep(3)
 
-        driver.execute_script("""
-            let btn = arguments[0];
-            btn.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
-            btn.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
-            btn.dispatchEvent(new MouseEvent('click', {bubbles:true}));
-        """, activate)
+        try:
+            radios = driver.find_elements(By.CSS_SELECTOR, "input[type='radio']")
+            if radios:
+                driver.execute_script("arguments[0].click();", radios[0])
+                time.sleep(1)
+        except:
+            pass
+
+        continue_xpaths = [
+            "//button[@type='submit'][contains(.,'Tiếp tục') or contains(.,'Continue')]",
+            "//button[@name='reset_action']",
+            "//div[@role='button'][contains(.,'Tiếp tục') or contains(.,'Continue')]",
+            "//button[@type='submit']"
+        ]
+
+        for xpath in continue_xpaths:
+            try:
+                btn = driver.find_element(By.XPATH, xpath)
+                if btn.is_displayed():
+                    driver.execute_script("arguments[0].click();", btn)
+                    break
+            except:
+                continue
+
+        time.sleep(4)
+
+        content = driver.page_source.lower()
+
+        if "recovery_code_entry" in content or "confirm" in driver.current_url:
+            results[email] = "✅ ĐÃ GỬI MÃ"
+        elif "checkpoint" in driver.current_url or "captcha" in content:
+            results[email] = "✅ ĐÃ GỬI MÃ.."
+        else:
+            results[email] = "❓ CHỜ"
 
         driver.quit()
-        return "🚀 Kích hoạt thành công!"
 
     except Exception as e:
-        driver.quit()
-        return f"⚠️ Lỗi: {e}"
+        results[email] = "❌ LỖI"
 
 
-# ====== TELEGRAM HANDLERS ======
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Gửi USER để kích hoạt")
+# ===== TELEGRAM HANDLER =====
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    emails = text.split("\n")
 
-async def handle_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.message.text
-    await update.message.reply_text("Đang xử lý...")
+    results = {}
 
-    result = await asyncio.to_thread(auto_activate, user)
+    await update.message.reply_text("🚀 Đang xử lý...")
 
-    await update.message.reply_text(result)
+    threads = []
 
+    for email in emails:
+        email = email.strip()
+        if not email:
+            continue
 
-# ================== FLASK ==================
-from flask import Flask
-from threading import Thread
+        results[email] = "Đang chạy..."
+        t = threading.Thread(target=run_job, args=(email, results))
+        t.start()
+        threads.append(t)
 
-web = Flask(__name__)
+    for t in threads:
+        t.join()
 
-@web.route('/')
-def home():
-    return "Bot is running!"
+    msg = ""
+    for k, v in results.items():
+        msg += f"{k} => {v}\n"
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web.run(host="0.0.0.0", port=port)
-
-Thread(target=run_web).start()
-
-
-# ================== TELEGRAM MAIN ==================
-async def main():
-    telegram_app = ApplicationBuilder().token(TOKEN).build()
-
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user))
-
-    await telegram_app.initialize()
-    await telegram_app.start()
-    await telegram_app.updater.start_polling()
-
-    await asyncio.Event().wait()
+    await update.message.reply_text(msg)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# ===== MAIN =====
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+print("✅ BOT ĐANG CHẠY...")
+app.run_polling()
