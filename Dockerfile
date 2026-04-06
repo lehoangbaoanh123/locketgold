@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Cài dependencies + Chrome (FIX apt-key lỗi)
+# Cài Chrome
 RUN apt-get update && apt-get install -y \
     wget unzip curl gnupg ca-certificates \
     fonts-liberation \
@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get update \
     && apt-get install -y google-chrome-stable
 
-# Cài ChromeDriver (match gần đúng)
+# Cài ChromeDriver
 RUN wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip \
     && unzip /tmp/chromedriver.zip -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/chromedriver
@@ -21,5 +21,8 @@ WORKDIR /app
 COPY . .
 
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 🔥 QUAN TRỌNG: mở port cho Render
+ENV PORT=10000
 
 CMD ["python", "se.py"]
