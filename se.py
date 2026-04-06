@@ -15,7 +15,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 
 # ===== TOKEN =====
-TOKEN = "8758019971:AAFa853BCy_frWLbUrPang31P3cgP8iwyH0"
+TOKEN = "8758019971:AAGHm1VrHtGVnFT5l1OjFn01FW_KBJEupbA"
 
 # ===== FLASK SERVER =====
 app_web = Flask(__name__)
