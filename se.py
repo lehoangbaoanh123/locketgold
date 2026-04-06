@@ -1,6 +1,7 @@
 import time
 import threading
 import os
+import asyncio
 
 from flask import Flask
 from telegram import Update
@@ -17,7 +18,7 @@ from selenium.webdriver.chrome.service import Service
 # ===== TOKEN =====
 TOKEN = "8758019971:AAGHm1VrHtGVnFT5l1OjFn01FW_KBJEupbA"
 
-# ===== FLASK SERVER =====
+# ===== FLASK =====
 app_web = Flask(__name__)
 
 @app_web.route('/')
@@ -29,8 +30,10 @@ def run_web():
     app_web.run(host='0.0.0.0', port=port)
 
 # ===== LOGIC =====
-def run_job(email, results):
+def run_job(email):
     try:
+        print(f"Running: {email}")
+
         options = Options()
         options.add_argument("--headless=new")
         options.add_argument("--disable-gpu")
@@ -45,8 +48,6 @@ def run_job(email, results):
 
         wait = WebDriverWait(driver, 15)
         driver.get("https://www.facebook.com/login/identify/")
-
-        results[email] = "Đang nhập..."
 
         input_box = wait.until(
             EC.presence_of_element_located(
@@ -68,35 +69,43 @@ def run_job(email, results):
         except:
             pass
 
-        continue_xpaths = [
-            "//button[@type='submit']",
-            "//div[@role='button']"
-        ]
-
-        for xpath in continue_xpaths:
-            try:
-                btn = driver.find_element(By.XPATH, xpath)
-                if btn.is_displayed():
-                    driver.execute_script("arguments[0].click();", btn)
-                    break
-            except:
-                continue
+        try:
+            btn = driver.find_element(By.XPATH, "//button[@type='submit']")
+            driver.execute_script("arguments[0].click();", btn)
+        except:
+            pass
 
         time.sleep(4)
 
         content = driver.page_source.lower()
 
-        if "recovery_code_entry" in content or "confirm" in driver.current_url:
-            results[email] = "✅ ĐÃ GỬI MÃ"
-        elif "checkpoint" in driver.current_url or "captcha" in content:
-            results[email] = "✅ ĐÃ GỬI MÃ.."
-        else:
-            results[email] = "❓ CHỜ"
-
         driver.quit()
 
-    except:
-        results[email] = "❌ LỖI"
+        if "recovery_code_entry" in content or "confirm" in driver.current_url:
+            return "✅ ĐÃ GỬI MÃ"
+        elif "checkpoint" in driver.current_url or "captcha" in content:
+            return "DONE"
+        else:
+            return "❓ CHỜ"
+
+    except Exception as e:
+        print(f"Error: {email} -> {e}")
+        return "❌ LỖI"
+
+
+# ===== GỬI KẾT QUẢ =====
+async def send_result(context, chat_id, email, result):
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"{email} => {result}"
+    )
+
+
+# ===== XỬ LÝ 1 EMAIL =====
+def process_email(email, context, chat_id):
+    result = run_job(email)
+
+    asyncio.run(send_result(context, chat_id, email, result))
 
 
 # ===== TELEGRAM =====
@@ -104,34 +113,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     emails = text.split("\n")
 
-    results = {}
     await update.message.reply_text("🚀 Đang xử lý...")
 
-    threads = []
+    MAX_THREADS = 3  # 🔥 chống crash
 
     for email in emails:
         email = email.strip()
         if not email:
             continue
 
-        results[email] = "Đang chạy..."
-        t = threading.Thread(target=run_job, args=(email, results))
-        t.start()
-        threads.append(t)
+        # giới hạn luồng
+        while threading.active_count() > MAX_THREADS:
+            await asyncio.sleep(1)
 
-    for t in threads:
-        t.join()
-
-    msg = ""
-    for k, v in results.items():
-        msg += f"{k} => {v}\n"
-
-    await update.message.reply_text(msg)
+        threading.Thread(
+            target=process_email,
+            args=(email, context, update.effective_chat.id)
+        ).start()
 
 
+# ===== BOT THREAD (FIX EVENT LOOP) =====
 def run_bot():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
     print("✅ BOT RUNNING...")
     app.run_polling()
 
