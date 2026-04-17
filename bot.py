@@ -1,13 +1,25 @@
 import aiohttp
 import asyncio
 import re
+import os
+import threading
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 
 BOT_TOKEN = "8775175535:AAEFtDzYhDej129U1cID1_LCaoYO1RGG-5c"
 ADMIN_ID = 8505592726
 ALLOWED_USERS_FILE = "users.txt"
+
 sem = asyncio.Semaphore(300)
+
+web_app = Flask(__name__)
+
+
+@web_app.route("/")
+def home():
+    return "Bot running"
+
 
 def load_users():
     try:
@@ -16,19 +28,23 @@ def load_users():
     except:
         return set()
 
+
 def save_users(users):
     with open(ALLOWED_USERS_FILE, "w", encoding="utf-8") as f:
         for user in sorted(users):
             f.write(user + "\n")
 
+
 def is_allowed(username):
     return bool(username and username.lower() in load_users())
 
+
 async def check_fb_info(session, uid):
     url = f"https://scanfb.id.vn/getInfo.php?id={uid}"
+
     async with sem:
         try:
-            async with session.get(url, timeout=100) as response:
+            async with session.get(url, timeout=30) as response:
                 text = await response.text()
 
                 if '"status":"error"' in text:
@@ -44,6 +60,7 @@ async def check_fb_info(session, uid):
         except:
             return f"{uid} | ERROR"
 
+
 async def process_uids(uid_list):
     connector = aiohttp.TCPConnector(limit=500)
 
@@ -56,6 +73,7 @@ async def process_uids(uid_list):
             f.write(line + "\n")
 
     return "result.txt"
+
 
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -72,6 +90,7 @@ async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Da them @{username}")
 
+
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -87,12 +106,14 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Da xoa @{username}")
 
+
 async def list_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
     users = load_users()
     await update.message.reply_text("\n".join("@" + u for u in users) or "Chua co user")
+
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username
@@ -114,7 +135,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(result_file, "rb") as doc:
         await update.message.reply_document(document=doc)
 
-def main():
+
+def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("adduser", add_user))
@@ -124,5 +146,9 @@ def main():
 
     app.run_polling(drop_pending_updates=True)
 
+
 if __name__ == "__main__":
-    main()
+    threading.Thread(target=run_bot).start()
+
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port)
