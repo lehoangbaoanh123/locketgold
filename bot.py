@@ -18,14 +18,14 @@ web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
-    return "Bot running"
+    return "Bot running successfully"
 
 
 def load_users():
     try:
         with open(ALLOWED_USERS_FILE, "r", encoding="utf-8") as f:
             return set(line.strip().lower() for line in f if line.strip())
-    except:
+    except FileNotFoundError:
         return set()
 
 
@@ -57,7 +57,8 @@ async def check_fb_info(session, uid):
                 locale_text = locale.group(1) if locale else "N/A"
 
                 return f"{uid} | {created_time} | {locale_text}"
-        except:
+
+        except Exception:
             return f"{uid} | ERROR"
 
 
@@ -68,11 +69,13 @@ async def process_uids(uid_list):
         tasks = [check_fb_info(session, uid) for uid in uid_list]
         results = await asyncio.gather(*tasks)
 
-    with open("result.txt", "w", encoding="utf-8") as f:
+    result_file = "result.txt"
+
+    with open(result_file, "w", encoding="utf-8") as f:
         for line in results:
             f.write(line + "\n")
 
-    return "result.txt"
+    return result_file
 
 
 async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,18 +125,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ban khong co quyen su dung bot")
         return
 
-    file = await update.message.document.get_file()
-    await file.download_to_drive("uid.txt")
+    try:
+        file = await update.message.document.get_file()
+        await file.download_to_drive("uid.txt")
 
-    await update.message.reply_text("Dang check UID...")
+        await update.message.reply_text("Dang check UID...")
 
-    with open("uid.txt", "r", encoding="utf-8") as f:
-        uids = [line.strip() for line in f if line.strip()]
+        with open("uid.txt", "r", encoding="utf-8") as f:
+            uids = [line.strip() for line in f if line.strip()]
 
-    result_file = await process_uids(uids)
+        result_file = await process_uids(uids)
 
-    with open(result_file, "rb") as doc:
-        await update.message.reply_document(document=doc)
+        with open(result_file, "rb") as doc:
+            await update.message.reply_document(document=doc)
+
+    except Exception:
+        await update.message.reply_text("Co loi khi xu ly file")
 
 
 def run_bot():
@@ -147,8 +154,11 @@ def run_bot():
     app.run_polling(drop_pending_updates=True)
 
 
-if __name__ == "__main__":
-    threading.Thread(target=run_bot).start()
-
+def run_web():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port)
+
+
+if __name__ == "__main__":
+    threading.Thread(target=run_web, daemon=True).start()
+    run_bot()
