@@ -22,7 +22,7 @@ users_table = db.table('users')
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- WEB SERVER (Dùng cho Render) ---
+# --- WEB SERVER (Dùng để duy trì bot trên Render/VPS) ---
 app_web = Flask(__name__)
 @app_web.route('/')
 def home(): return "Bot is Running!"
@@ -44,7 +44,7 @@ def rotate_token():
     if all_t:
         current_token_index = (current_token_index + 1) % len(all_t)
 
-# --- LOGIC LẤY UID (GIỮ NGUYÊN TỪ CODE BẠN CUNG CẤP) ---
+# --- LOGIC LẤY UID (GIỮ 100% LOGIC CỦA BẠN + FIX 403) ---
 def get_fb_uid(link_fb):
     """
     Hàm lấy UID từ URL Facebook thông qua API ffb.vn
@@ -55,15 +55,30 @@ def get_fb_uid(link_fb):
     else:
         url_to_check = link_fb
 
+    # API Endpoint
     api_url = "https://ffb.vn/api/tool/get-id-fb"
-    params = {'idfb': url_to_check}
+    params = {
+        'idfb': url_to_check
+    }
+
+    # THÊM HEADERS ĐỂ TRÁNH LỖI 403 (Quan trọng)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Referer': 'https://ffb.vn/'
+    }
 
     try:
-        response = requests.get(api_url, params=params)
+        # Gửi request GET đến API (giữ nguyên logic params)
+        response = requests.get(api_url, params=params, headers=headers, timeout=15)
+        
+        # Kiểm tra nếu request thành công (status code 200)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            return data
         else:
             return {"status": "error", "message": f"Lỗi kết nối API: {response.status_code}"}
+            
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -74,8 +89,7 @@ def check_permission(user_id):
     user = users_table.get(U.id == user_id)
     if user:
         expiry = datetime.datetime.fromisoformat(user['expiry'])
-        if expiry > datetime.datetime.now():
-            return True
+        if expiry > datetime.datetime.now(): return True
     return False
 
 # --- LOGIC FACEBOOK GRAPH API ---
@@ -109,31 +123,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 <b>Bạn không có quyền hoặc hết hạn sử dụng.</b>", parse_mode=ParseMode.HTML)
         return
 
-    raw_input = update.message.text.strip()
+    raw_text = update.message.text.strip()
     sent_msg = await update.message.reply_text("⌛ <b>Đang trích xuất dữ liệu...</b>", parse_mode=ParseMode.HTML)
 
-    # --- BƯỚC 1: XỬ LÝ ĐỂ LẤY ĐƯỢC UID ---
-    if raw_input.isdigit():
-        uid = raw_input # Nếu là số thì dùng luôn
+    # Bước 1: Phân loại đầu vào và lấy UID
+    if raw_text.isdigit():
+        uid = raw_text # Nếu là số thì chạy luôn
     else:
-        # Nếu là URL/Username thì dùng hàm get_fb_uid để lấy UID
-        uid_response = get_fb_uid(raw_input)
-        uid = uid_response.get('id')
+        # Nếu là URL/Username thì dùng hàm get_fb_uid của bạn
+        uid_data = get_fb_uid(raw_text)
+        uid = uid_data.get('id')
         
         if not uid:
-            err_msg = uid_response.get('message', 'Không tìm thấy UID.')
-            await sent_msg.edit_text(f"❌ <b>Lỗi lấy UID:</b> <code>{err_msg}</code>", parse_mode=ParseMode.HTML)
+            err = uid_data.get('message') or "Không xác định"
+            await sent_msg.edit_text(f"❌ <b>Lỗi lấy UID:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
             return
 
-    # --- BƯỚC 2: CHẠY LẤY THÔNG TIN TỪ UID ĐÃ CÓ ---
+    # Bước 2: Quét thông tin từ UID
+    await sent_msg.edit_text(f"⌛ <b>Đang quét dữ liệu UID:</b> <code>{uid}</code>...", parse_mode=ParseMode.HTML)
     data = request_fb_api(uid)
 
     if "error_internal" in data or "error" in data:
-        err = data.get("error_internal") or data["error"].get("message")
-        await sent_msg.edit_text(f"❌ <b>Lỗi API FB:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
+        err_msg = data.get("error_internal") or data["error"].get("message")
+        await sent_msg.edit_text(f"❌ <b>Lỗi API FB:</b> <code>{err_msg}</code>", parse_mode=ParseMode.HTML)
         return
 
-    # --- XỬ LÝ DỮ LIỆU HIỂN THỊ (GIỮ NGUYÊN GIAO DIỆN CỦA BẠN) ---
+    # Bước 3: Định dạng hiển thị Profile
     def g(field, default="🔒 Ẩn"):
         return data.get(field, default)
 
@@ -175,9 +190,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-# --- COMMANDS ADMIN ---
+# --- ADMIN COMMANDS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 <b>Gửi UID, Link hoặc Username Facebook để kiểm tra!</b>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text("👋 <b>Gửi UID, Link hoặc Username FB để check!</b>", parse_mode=ParseMode.HTML)
 
 async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -187,24 +202,18 @@ async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        target_id = int(context.args[0])
-        days = int(context.args[1])
-        expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
-        users_table.upsert({'id': target_id, 'expiry': expiry}, Query().id == target_id)
-        await update.message.reply_text(f"✅ Đã cấp quyền cho <code>{target_id}</code> trong {days} ngày.", parse_mode=ParseMode.HTML)
-    except:
-        await update.message.reply_text("❌ HD: `/grant [ID] [Số ngày]`")
+        t_id, days = int(context.args[0]), int(context.args[1])
+        exp = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
+        users_table.upsert({'id': t_id, 'expiry': exp}, Query().id == t_id)
+        await update.message.reply_text(f"✅ Đã cấp quyền cho {t_id} trong {days} ngày.")
+    except: await update.message.reply_text("❌ `/grant [ID] [Số ngày]`")
 
 if __name__ == '__main__':
-    # Chạy Web Server song song
     threading.Thread(target=run_web, daemon=True).start()
-
-    # Khởi chạy Bot
     app = ApplicationBuilder().token(TOKEN_BOT).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_token))
     app.add_handler(CommandHandler("grant", grant_user))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
     print("Bot is running...")
     app.run_polling()
