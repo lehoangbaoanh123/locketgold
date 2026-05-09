@@ -115,7 +115,7 @@ def request_fb_api(uid):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Kiểm tra quyền
     if not check_permission(update):
-        await update.message.reply_text("🚫 <b>Bạn không có quyền hoặc hết hạn sử dụng.</b>", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("🚫 <b>Liên hệ cho admin @lhba5510 để cấp quyền.</b>", parse_mode=ParseMode.HTML)
         return
 
     raw_input = update.message.text.strip()
