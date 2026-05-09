@@ -67,15 +67,14 @@ def get_fb_uid(link_fb):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- KIỂM TRA QUYỀN (GIỮ NGUYÊN) ---
+# --- KIỂM TRA QUYỀN ---
 def check_permission(user_id):
     if user_id == ADMIN_ID: return True
     U = Query()
     user = users_table.get(U.id == user_id)
     if user:
         expiry = datetime.datetime.fromisoformat(user['expiry'])
-        if expiry > datetime.datetime.now():
-            return True
+        if expiry > datetime.datetime.now(): return True
     return False
 
 # --- LOGIC FACEBOOK API (GIỮ NGUYÊN 100%) ---
@@ -112,7 +111,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     raw_input = update.message.text.strip()
     sent_msg = await update.message.reply_text("⌛ <b>Đang trích xuất dữ liệu...</b>", parse_mode=ParseMode.HTML)
 
-    # 1. Logic lấy UID (Hỗ trợ cả UID nhập trực tiếp và URL/Username)
     if raw_input.isdigit():
         uid = raw_input
     else:
@@ -123,14 +121,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await sent_msg.edit_text(f"❌ <b>Lỗi lấy UID:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
             return
 
-    # 2. Logic trích xuất thông tin (GIỮ NGUYÊN LOGIC GỐC CỦA BẠN)
     data = request_fb_api(uid)
-
     if "error_internal" in data or "error" in data:
         err = data.get("error_internal") or data["error"].get("message")
         await sent_msg.edit_text(f"❌ <b>Lỗi:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
         return
 
+    # --- LOGIC HIỂN THỊ GỐC (GIỮ NGUYÊN 100%) ---
     def g(field, default="🔒 Ẩn"):
         return data.get(field, default)
 
@@ -138,16 +135,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_verified = "💎" if data.get("is_verified") else ""
     gender = {"male": "Nam 👨", "female": "Nữ 👩"}.get(data.get("gender"), "Ẩn 🔒")
     sub = data.get("subscribers", {}).get("summary", {}).get("total_count", 0)
-    
     hometown = data.get("hometown", {}).get("name", "N/A")
     location = data.get("location", {}).get("name", "N/A")
     work = data.get("work", [{}])[0].get("employer", {}).get("name", "N/A")
     edu = data.get("education", [{}])[-1].get("school", {}).get("name", "N/A")
-    
     c_time = g('created_time', 'N/A').split("T")[0]
     u_time = g('updated_time', 'N/A').split("T")[0]
 
-    # --- GIAO DIỆN HIỂN THỊ (GIỮ NGUYÊN 100%) ---
     msg = f"👤 <b>{name.upper()}</b> {is_verified}\n"
     msg += f"<code>ID: {uid}</code>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
@@ -156,16 +150,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"⚧ <b>Giới tính:</b> {gender}\n"
     msg += f"👥 <b>Follower:</b> <code>{sub:,}</code>\n"
     msg += f"💍 <b>Hôn nhân:</b> {g('relationship_status')}\n"
-    
     if hometown != "N/A" or location != "N/A":
         msg += f"<code>────────────────────</code>\n"
         msg += f"🏠 <b>Quê quán:</b> {hometown}\n"
         msg += f"📍 <b>Sống tại:</b> {location}\n"
-    
     if work != "N/A" or edu != "N/A":
         msg += f"💼 <b>Công việc:</b> {work}\n"
         msg += f"🎓 <b>Học vấn:</b> {edu}\n"
-
     msg += f"<code>────────────────────</code>\n"
     msg += f"🌐 <b>Ngôn ngữ:</b> {g('locale')} (GMT+{g('timezone')})\n"
     msg += f"📝 <b>Tiểu sử:</b> <i>{g('about', 'Trống')}</i>\n"
@@ -175,29 +166,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-# --- ADMIN COMMANDS (GIỮ NGUYÊN) ---
+# --- COMMANDS ADMIN ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 <b>Gửi UID Facebook để kiểm tra thông tin!</b>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text("👋 <b>Gửi UID/Link Facebook để check!</b>", parse_mode=ParseMode.HTML)
 
 async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     for t in context.args: tokens_table.insert({'value': t})
     await update.message.reply_text(f"✅ Đã thêm {len(context.args)} token.")
 
+async def clear_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    tokens_table.truncate()
+    await update.message.reply_text("🗑 <b>Đã xoá sạch danh sách Token.</b>", parse_mode=ParseMode.HTML)
+
 async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        target_id, days = int(context.args[0]), int(context.args[1])
+        t_id, days = int(context.args[0]), int(context.args[1])
         expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
-        users_table.upsert({'id': target_id, 'expiry': expiry}, Query().id == target_id)
-        await update.message.reply_text(f"✅ Đã cấp quyền cho {target_id} trong {days} ngày.")
-    except: await update.message.reply_text("❌ HD: `/grant [ID] [Số ngày]`")
+        users_table.upsert({'id': t_id, 'expiry': expiry}, Query().id == t_id)
+        await update.message.reply_text(f"✅ Đã cấp quyền cho {t_id} trong {days} ngày.")
+    except: await update.message.reply_text("❌ HD: `/grant [ID] [Ngày]`")
 
 if __name__ == '__main__':
     threading.Thread(target=run_web, daemon=True).start()
     app = ApplicationBuilder().token(TOKEN_BOT).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_token))
+    app.add_handler(CommandHandler("clear", clear_tokens)) # ĐÃ THÊM LẠI
     app.add_handler(CommandHandler("grant", grant_user))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     print("Bot is running...")
