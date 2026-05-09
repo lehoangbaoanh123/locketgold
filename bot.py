@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 
-# --- CONFIG ---
+# --- CONFIG (GIỮ NGUYÊN) ---
 TOKEN_BOT = "8330278397:AAGaoqGXXL_BDca2Kztev2X_O4AOEKW_hGg"
 ADMIN_ID = 8505592726
 FIELDS = "id,name,first_name,last_name,username,is_verified,birthday,gender,relationship_status,significant_other,hometown,location,work,education,about,quotes,website,subscribers.limit(0),created_time,updated_time,languages,timezone,locale"
@@ -22,7 +22,7 @@ users_table = db.table('users')
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- WEB SERVER (Dùng để duy trì bot trên Render/VPS) ---
+# --- WEB SERVER ---
 app_web = Flask(__name__)
 @app_web.route('/')
 def home(): return "Bot is Running!"
@@ -31,7 +31,7 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app_web.run(host='0.0.0.0', port=port)
 
-# --- QUẢN LÝ TOKEN ---
+# --- QUẢN LÝ TOKEN (GIỮ NGUYÊN) ---
 current_token_index = 0
 token_lock = threading.Lock()
 
@@ -44,55 +44,41 @@ def rotate_token():
     if all_t:
         current_token_index = (current_token_index + 1) % len(all_t)
 
-# --- LOGIC LẤY UID (GIỮ 100% LOGIC CỦA BẠN + FIX 403) ---
+# --- LOGIC GET UID (GIỮ 100% LOGIC BẠN CUNG CẤP + FIX 403) ---
 def get_fb_uid(link_fb):
-    """
-    Hàm lấy UID từ URL Facebook thông qua API ffb.vn
-    """
-    # Xử lý nếu người dùng chỉ nhập username
     if not link_fb.startswith("http"):
         url_to_check = f"https://www.facebook.com/{link_fb}"
     else:
         url_to_check = link_fb
 
-    # API Endpoint
-    api_url = "https://ffb.vn/api/tool/get-id-fb"
-    params = {
-        'idfb': url_to_check
-    }
-
-    # THÊM HEADERS ĐỂ TRÁNH LỖI 403 (Quan trọng)
+    api_url = "https://ffb.vn/api/tool/get-id-fb?idfb=" + requests.utils.quote(url_to_check)
+    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
         'Referer': 'https://ffb.vn/'
     }
 
     try:
-        # Gửi request GET đến API (giữ nguyên logic params)
-        response = requests.get(api_url, params=params, headers=headers, timeout=15)
-        
-        # Kiểm tra nếu request thành công (status code 200)
+        response = requests.get(api_url, headers=headers, timeout=15)
         if response.status_code == 200:
-            data = response.json()
-            return data
+            return response.json()
         else:
             return {"status": "error", "message": f"Lỗi kết nối API: {response.status_code}"}
-            
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- KIỂM TRA QUYỀN TRUY CẬP ---
+# --- KIỂM TRA QUYỀN (GIỮ NGUYÊN) ---
 def check_permission(user_id):
     if user_id == ADMIN_ID: return True
     U = Query()
     user = users_table.get(U.id == user_id)
     if user:
         expiry = datetime.datetime.fromisoformat(user['expiry'])
-        if expiry > datetime.datetime.now(): return True
+        if expiry > datetime.datetime.now():
+            return True
     return False
 
-# --- LOGIC FACEBOOK GRAPH API ---
+# --- LOGIC FACEBOOK API (GIỮ NGUYÊN 100%) ---
 def request_fb_api(uid):
     all_t = get_tokens()
     if not all_t: return {"error_internal": "Hệ thống chưa có Token."}
@@ -116,39 +102,35 @@ def request_fb_api(uid):
             rotate_token()
     return {"error_internal": "Tất cả Token đều lỗi hoặc hết hạn."}
 
-# --- XỬ LÝ TIN NHẮN CHÍNH ---
+# --- XỬ LÝ TIN NHẮN ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not check_permission(user_id):
         await update.message.reply_text("🚫 <b>Bạn không có quyền hoặc hết hạn sử dụng.</b>", parse_mode=ParseMode.HTML)
         return
 
-    raw_text = update.message.text.strip()
+    raw_input = update.message.text.strip()
     sent_msg = await update.message.reply_text("⌛ <b>Đang trích xuất dữ liệu...</b>", parse_mode=ParseMode.HTML)
 
-    # Bước 1: Phân loại đầu vào và lấy UID
-    if raw_text.isdigit():
-        uid = raw_text # Nếu là số thì chạy luôn
+    # 1. Logic lấy UID (Hỗ trợ cả UID nhập trực tiếp và URL/Username)
+    if raw_input.isdigit():
+        uid = raw_input
     else:
-        # Nếu là URL/Username thì dùng hàm get_fb_uid của bạn
-        uid_data = get_fb_uid(raw_text)
+        uid_data = get_fb_uid(raw_input)
         uid = uid_data.get('id')
-        
         if not uid:
-            err = uid_data.get('message') or "Không xác định"
+            err = uid_data.get('message', 'Không tìm thấy UID')
             await sent_msg.edit_text(f"❌ <b>Lỗi lấy UID:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
             return
 
-    # Bước 2: Quét thông tin từ UID
-    await sent_msg.edit_text(f"⌛ <b>Đang quét dữ liệu UID:</b> <code>{uid}</code>...", parse_mode=ParseMode.HTML)
+    # 2. Logic trích xuất thông tin (GIỮ NGUYÊN LOGIC GỐC CỦA BẠN)
     data = request_fb_api(uid)
 
     if "error_internal" in data or "error" in data:
-        err_msg = data.get("error_internal") or data["error"].get("message")
-        await sent_msg.edit_text(f"❌ <b>Lỗi API FB:</b> <code>{err_msg}</code>", parse_mode=ParseMode.HTML)
+        err = data.get("error_internal") or data["error"].get("message")
+        await sent_msg.edit_text(f"❌ <b>Lỗi:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
         return
 
-    # Bước 3: Định dạng hiển thị Profile
     def g(field, default="🔒 Ẩn"):
         return data.get(field, default)
 
@@ -156,13 +138,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_verified = "💎" if data.get("is_verified") else ""
     gender = {"male": "Nam 👨", "female": "Nữ 👩"}.get(data.get("gender"), "Ẩn 🔒")
     sub = data.get("subscribers", {}).get("summary", {}).get("total_count", 0)
+    
     hometown = data.get("hometown", {}).get("name", "N/A")
     location = data.get("location", {}).get("name", "N/A")
     work = data.get("work", [{}])[0].get("employer", {}).get("name", "N/A")
     edu = data.get("education", [{}])[-1].get("school", {}).get("name", "N/A")
+    
     c_time = g('created_time', 'N/A').split("T")[0]
     u_time = g('updated_time', 'N/A').split("T")[0]
 
+    # --- GIAO DIỆN HIỂN THỊ (GIỮ NGUYÊN 100%) ---
     msg = f"👤 <b>{name.upper()}</b> {is_verified}\n"
     msg += f"<code>ID: {uid}</code>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
@@ -190,23 +175,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
-# --- ADMIN COMMANDS ---
+# --- ADMIN COMMANDS (GIỮ NGUYÊN) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 <b>Gửi UID, Link hoặc Username FB để check!</b>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text("👋 <b>Gửi UID Facebook để kiểm tra thông tin!</b>", parse_mode=ParseMode.HTML)
 
 async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     for t in context.args: tokens_table.insert({'value': t})
-    await update.message.reply_text(f"✅ Đã thêm {len(context.args)} token mới.")
+    await update.message.reply_text(f"✅ Đã thêm {len(context.args)} token.")
 
 async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        t_id, days = int(context.args[0]), int(context.args[1])
-        exp = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
-        users_table.upsert({'id': t_id, 'expiry': exp}, Query().id == t_id)
-        await update.message.reply_text(f"✅ Đã cấp quyền cho {t_id} trong {days} ngày.")
-    except: await update.message.reply_text("❌ `/grant [ID] [Số ngày]`")
+        target_id, days = int(context.args[0]), int(context.args[1])
+        expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
+        users_table.upsert({'id': target_id, 'expiry': expiry}, Query().id == target_id)
+        await update.message.reply_text(f"✅ Đã cấp quyền cho {target_id} trong {days} ngày.")
+    except: await update.message.reply_text("❌ HD: `/grant [ID] [Số ngày]`")
 
 if __name__ == '__main__':
     threading.Thread(target=run_web, daemon=True).start()
