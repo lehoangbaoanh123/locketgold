@@ -64,55 +64,57 @@ def get_fb_uid(link_fb):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- KIỂM TRA QUYỀN ---
-def check_permission(user_id):
+# --- KIỂM TRA QUYỀN (HỖ TRỢ USERNAME) ---
+def check_permission(update: Update):
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    
     if user_id == ADMIN_ID: return True
+    
     U = Query()
-    user = users_table.get(U.id == user_id)
+    # Kiểm tra theo ID hoặc Username (không phân biệt chữ hoa thường)
+    user = users_table.get((U.id == user_id) | (U.username == username))
+    
     if user:
         expiry = datetime.datetime.fromisoformat(user['expiry'])
-        if expiry > datetime.datetime.now(): return True
+        if expiry > datetime.datetime.now():
+            # Nếu họ vào bằng username, cập nhật ID của họ để bảo mật hơn
+            if not user.get('id'):
+                users_table.update({'id': user_id}, (U.username == username))
+            return True
     return False
 
-# --- LOGIC XOAY VÒNG TOKEN (ĐÃ TỐI ƯU THEO Ý BẠN) ---
+# --- LOGIC XOAY VÒNG TOKEN ---
 def request_fb_api(uid):
     all_t = get_tokens()
     if not all_t: 
         return {"error_internal": "Hệ thống chưa có Token. Vui lòng liên hệ Admin!"}
     
-    # Vòng lặp quét qua toàn bộ danh sách token
     num_tokens = len(all_t)
     for _ in range(num_tokens):
         with token_lock:
-            # Lấy token hiện tại
             token = all_t[current_token_index % num_tokens]
         
         url = f"https://graph.facebook.com/{uid}?fields={FIELDS}&access_token={token}"
         try:
             r = requests.get(url, timeout=10)
             data = r.json()
-            
-            # Nếu token die hoặc hết hạn
             if "error" in data:
                 msg = data["error"].get("message", "").lower()
-                # Các dấu hiệu token die/checkpoint/hết hạn
                 if any(k in msg for k in ["access token", "expired", "session", "checkpoint", "invalid"]):
-                    rotate_token() # Chuyển sang token tiếp theo
-                    continue # Thử lại với token mới
-            
-            # Nếu thành công hoặc lỗi không phải do token (ví dụ UID sai), trả về luôn
+                    rotate_token()
+                    continue
             return data
         except:
             rotate_token()
             continue
             
-    # Nếu đã chạy hết vòng lặp mà không token nào dùng được
     return {"error_internal": "Tất cả Token đã die hoặc gặp sự cố. Vui lòng liên hệ Admin!"}
 
-# --- XỬ LÝ TIN NHẮN ---
+# --- XỬ LÝ TIN NHẮN (CHỈ KIỂM TRA THÔNG TIN) ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not check_permission(user_id):
+    # Kiểm tra quyền
+    if not check_permission(update):
         await update.message.reply_text("🚫 <b>Bạn không có quyền hoặc hết hạn sử dụng.</b>", parse_mode=ParseMode.HTML)
         return
 
@@ -191,14 +193,25 @@ async def clear_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tokens_table.truncate()
     await update.message.reply_text("🗑 <b>Đã xoá sạch danh sách Token.</b>", parse_mode=ParseMode.HTML)
 
+# Cải tiến lệnh GRANT hỗ trợ @username
 async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        t_id, days = int(context.args[0]), int(context.args[1])
+        user_input = context.args[0] # Có thể là ID hoặc @username
+        days = int(context.args[1])
         expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
-        users_table.upsert({'id': t_id, 'expiry': expiry}, Query().id == t_id)
-        await update.message.reply_text(f"✅ Đã cấp quyền cho {t_id} trong {days} ngày.")
-    except: await update.message.reply_text("❌ HD: `/grant [ID] [Ngày]`")
+        
+        U = Query()
+        if user_input.startswith("@"):
+            username = user_input.replace("@", "")
+            users_table.upsert({'username': username, 'expiry': expiry}, U.username == username)
+            await update.message.reply_text(f"✅ Đã cấp quyền cho <b>{user_input}</b> trong {days} ngày.", parse_mode=ParseMode.HTML)
+        else:
+            t_id = int(user_input)
+            users_table.upsert({'id': t_id, 'expiry': expiry}, U.id == t_id)
+            await update.message.reply_text(f"✅ Đã cấp quyền cho ID <code>{t_id}</code> trong {days} ngày.", parse_mode=ParseMode.HTML)
+    except:
+        await update.message.reply_text("❌ HD: `/grant [ID hoặc @username] [Số ngày]`")
 
 if __name__ == '__main__':
     threading.Thread(target=run_web, daemon=True).start()
