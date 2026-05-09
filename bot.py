@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 
-# --- CONFIG (GIỮ NGUYÊN) ---
+# --- CONFIG ---
 TOKEN_BOT = "8330278397:AAGaoqGXXL_BDca2Kztev2X_O4AOEKW_hGg"
 ADMIN_ID = 8505592726
 FIELDS = "id,name,first_name,last_name,username,is_verified,birthday,gender,relationship_status,significant_other,hometown,location,work,education,about,quotes,website,subscribers.limit(0),created_time,updated_time,languages,timezone,locale"
@@ -31,7 +31,7 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app_web.run(host='0.0.0.0', port=port)
 
-# --- QUẢN LÝ TOKEN (GIỮ NGUYÊN) ---
+# --- QUẢN LÝ TOKEN ---
 current_token_index = 0
 token_lock = threading.Lock()
 
@@ -44,7 +44,7 @@ def rotate_token():
     if all_t:
         current_token_index = (current_token_index + 1) % len(all_t)
 
-# --- LOGIC GET UID (GIỮ 100% LOGIC BẠN CUNG CẤP + FIX 403) ---
+# --- LOGIC GET UID (GIỮ NGUYÊN 100% + FIX 403) ---
 def get_fb_uid(link_fb):
     if not link_fb.startswith("http"):
         url_to_check = f"https://www.facebook.com/{link_fb}"
@@ -52,18 +52,15 @@ def get_fb_uid(link_fb):
         url_to_check = link_fb
 
     api_url = "https://ffb.vn/api/tool/get-id-fb?idfb=" + requests.utils.quote(url_to_check)
-    
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://ffb.vn/'
     }
-
     try:
         response = requests.get(api_url, headers=headers, timeout=15)
         if response.status_code == 200:
             return response.json()
-        else:
-            return {"status": "error", "message": f"Lỗi kết nối API: {response.status_code}"}
+        return {"status": "error", "message": f"Lỗi kết nối API: {response.status_code}"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -77,29 +74,40 @@ def check_permission(user_id):
         if expiry > datetime.datetime.now(): return True
     return False
 
-# --- LOGIC FACEBOOK API (GIỮ NGUYÊN 100%) ---
+# --- LOGIC XOAY VÒNG TOKEN (ĐÃ TỐI ƯU THEO Ý BẠN) ---
 def request_fb_api(uid):
     all_t = get_tokens()
-    if not all_t: return {"error_internal": "Hệ thống chưa có Token."}
+    if not all_t: 
+        return {"error_internal": "Hệ thống chưa có Token. Vui lòng liên hệ Admin!"}
     
-    max_retry = len(all_t)
-    for _ in range(max_retry):
+    # Vòng lặp quét qua toàn bộ danh sách token
+    num_tokens = len(all_t)
+    for _ in range(num_tokens):
         with token_lock:
-            token = all_t[current_token_index % len(all_t)]
+            # Lấy token hiện tại
+            token = all_t[current_token_index % num_tokens]
         
         url = f"https://graph.facebook.com/{uid}?fields={FIELDS}&access_token={token}"
         try:
             r = requests.get(url, timeout=10)
             data = r.json()
+            
+            # Nếu token die hoặc hết hạn
             if "error" in data:
                 msg = data["error"].get("message", "").lower()
-                if any(k in msg for k in ["access token", "expired", "session", "checkpoint"]):
-                    rotate_token()
-                    continue
+                # Các dấu hiệu token die/checkpoint/hết hạn
+                if any(k in msg for k in ["access token", "expired", "session", "checkpoint", "invalid"]):
+                    rotate_token() # Chuyển sang token tiếp theo
+                    continue # Thử lại với token mới
+            
+            # Nếu thành công hoặc lỗi không phải do token (ví dụ UID sai), trả về luôn
             return data
         except:
             rotate_token()
-    return {"error_internal": "Tất cả Token đều lỗi hoặc hết hạn."}
+            continue
+            
+    # Nếu đã chạy hết vòng lặp mà không token nào dùng được
+    return {"error_internal": "Tất cả Token đã die hoặc gặp sự cố. Vui lòng liên hệ Admin!"}
 
 # --- XỬ LÝ TIN NHẮN ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,12 +130,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     data = request_fb_api(uid)
-    if "error_internal" in data or "error" in data:
-        err = data.get("error_internal") or data["error"].get("message")
-        await sent_msg.edit_text(f"❌ <b>Lỗi:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
+    if "error_internal" in data:
+        await sent_msg.edit_text(f"⚠️ <b>Thông báo:</b> <code>{data['error_internal']}</code>", parse_mode=ParseMode.HTML)
+        return
+    elif "error" in data:
+        err = data["error"].get("message")
+        await sent_msg.edit_text(f"❌ <b>Lỗi API FB:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
         return
 
-    # --- LOGIC HIỂN THỊ GỐC (GIỮ NGUYÊN 100%) ---
+    # --- HIỂN THỊ THÔNG TIN ---
     def g(field, default="🔒 Ẩn"):
         return data.get(field, default)
 
@@ -194,7 +205,7 @@ if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN_BOT).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_token))
-    app.add_handler(CommandHandler("clear", clear_tokens)) # ĐÃ THÊM LẠI
+    app.add_handler(CommandHandler("clear", clear_tokens))
     app.add_handler(CommandHandler("grant", grant_user))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     print("Bot is running...")
