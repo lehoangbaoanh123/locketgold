@@ -1,164 +1,191 @@
-import aiohttp
-import asyncio
-import re
-import os
+import logging
+import requests
 import threading
+import datetime
+import os
 from flask import Flask
+from tinydb import TinyDB, Query
 from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.constants import ParseMode
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters, CommandHandler
 
-BOT_TOKEN = "8775175535:AAEFtDzYhDej129U1cID1_LCaoYO1RGG-5c"
-ADMIN_ID = 8505592726
-ALLOWED_USERS_FILE = "users.txt"
+# --- CONFIG ---
+TOKEN_BOT = "8330278397:AAGaoqGXXL_BDca2Kztev2X_O4AOEKW_hGg"
+ADMIN_ID = 8505592726  # <--- THAY ID TELEGRAM CỦA BẠN VÀO ĐÂY
+FIELDS = "id,name,first_name,last_name,username,is_verified,birthday,gender,relationship_status,significant_other,hometown,location,work,education,about,quotes,website,subscribers.limit(0),created_time,updated_time,languages,timezone,locale"
 
-sem = asyncio.Semaphore(300)
+# Database
+db = TinyDB('db.json')
+tokens_table = db.table('tokens')
+users_table = db.table('users')
 
-web_app = Flask(__name__)
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
+# --- WEB SERVER (Để chạy trên Render Web Service) ---
+app_web = Flask(__name__)
 
-@web_app.route("/")
+@app_web.route('/')
 def home():
-    return "Bot running successfully"
-
-
-def load_users():
-    try:
-        with open(ALLOWED_USERS_FILE, "r", encoding="utf-8") as f:
-            return set(line.strip().lower() for line in f if line.strip())
-    except FileNotFoundError:
-        return set()
-
-
-def save_users(users):
-    with open(ALLOWED_USERS_FILE, "w", encoding="utf-8") as f:
-        for user in sorted(users):
-            f.write(user + "\n")
-
-
-def is_allowed(username):
-    return bool(username and username.lower() in load_users())
-
-
-async def check_fb_info(session, uid):
-    url = f"https://scanfb.id.vn/getInfo.php?id={uid}"
-
-    async with sem:
-        try:
-            async with session.get(url, timeout=30) as response:
-                text = await response.text()
-
-                if '"status":"error"' in text:
-                    return f"{uid} | DIE"
-
-                created = re.search(r'"created_time"\s*:\s*"([^"]+)"', text)
-                locale = re.search(r'"locale"\s*:\s*"([^"]+)"', text)
-
-                created_time = created.group(1) if created else "N/A"
-                locale_text = locale.group(1) if locale else "N/A"
-
-                return f"{uid} | {created_time} | {locale_text}"
-
-        except Exception:
-            return f"{uid} | ERROR"
-
-
-async def process_uids(uid_list):
-    connector = aiohttp.TCPConnector(limit=500)
-
-    async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [check_fb_info(session, uid) for uid in uid_list]
-        results = await asyncio.gather(*tasks)
-
-    result_file = "result.txt"
-
-    with open(result_file, "w", encoding="utf-8") as f:
-        for line in results:
-            f.write(line + "\n")
-
-    return result_file
-
-
-async def add_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text("Dung: /adduser username")
-        return
-
-    username = context.args[0].replace("@", "").lower()
-    users = load_users()
-    users.add(username)
-    save_users(users)
-
-    await update.message.reply_text(f"Da them @{username}")
-
-
-async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text("Dung: /removeuser username")
-        return
-
-    username = context.args[0].replace("@", "").lower()
-    users = load_users()
-    users.discard(username)
-    save_users(users)
-
-    await update.message.reply_text(f"Da xoa @{username}")
-
-
-async def list_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    users = load_users()
-    await update.message.reply_text("\n".join("@" + u for u in users) or "Chua co user")
-
-
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.effective_user.username
-
-    if update.effective_user.id != ADMIN_ID and not is_allowed(username):
-        await update.message.reply_text("Ban khong co quyen su dung bot")
-        return
-
-    try:
-        file = await update.message.document.get_file()
-        await file.download_to_drive("uid.txt")
-
-        await update.message.reply_text("Dang check UID...")
-
-        with open("uid.txt", "r", encoding="utf-8") as f:
-            uids = [line.strip() for line in f if line.strip()]
-
-        result_file = await process_uids(uids)
-
-        with open(result_file, "rb") as doc:
-            await update.message.reply_document(document=doc)
-
-    except Exception:
-        await update.message.reply_text("Co loi khi xu ly file")
-
-
-def run_bot():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("adduser", add_user))
-    app.add_handler(CommandHandler("removeuser", remove_user))
-    app.add_handler(CommandHandler("listuser", list_user))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-
-    app.run_polling(drop_pending_updates=True)
-
+    return "Bot is Running!"
 
 def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 8080))
+    app_web.run(host='0.0.0.0', port=port)
 
+# --- QUẢN LÝ TOKEN ---
+current_token_index = 0
+token_lock = threading.Lock()
 
-if __name__ == "__main__":
+def get_tokens():
+    return [t['value'] for t in tokens_table.all()]
+
+def rotate_token():
+    global current_token_index
+    all_t = get_tokens()
+    if all_t:
+        current_token_index = (current_token_index + 1) % len(all_t)
+
+# --- KIỂM TRA QUYỀN ---
+def check_permission(user_id):
+    if user_id == ADMIN_ID: return True
+    U = Query()
+    user = users_table.get(U.id == user_id)
+    if user:
+        expiry = datetime.datetime.fromisoformat(user['expiry'])
+        if expiry > datetime.datetime.now():
+            return True
+    return False
+
+# --- LOGIC FACEBOOK API ---
+def request_fb_api(uid):
+    all_t = get_tokens()
+    if not all_t: return {"error_internal": "Hệ thống chưa có Token."}
+    
+    max_retry = len(all_t)
+    for _ in range(max_retry):
+        with token_lock:
+            token = all_t[current_token_index % len(all_t)]
+        
+        url = f"https://graph.facebook.com/{uid}?fields={FIELDS}&access_token={token}"
+        try:
+            r = requests.get(url, timeout=10)
+            data = r.json()
+            if "error" in data:
+                msg = data["error"].get("message", "").lower()
+                if any(k in msg for k in ["access token", "expired", "session", "checkpoint"]):
+                    rotate_token()
+                    continue
+            return data
+        except:
+            rotate_token()
+    return {"error_internal": "Tất cả Token đều lỗi hoặc hết hạn."}
+
+# --- COMMANDS ADMIN ---
+async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    new_tokens = context.args
+    if not new_tokens:
+        await update.message.reply_text("❌ HD: `/add token1 token2...`")
+        return
+    for t in new_tokens:
+        tokens_table.insert({'value': t})
+    await update.message.reply_text(f"✅ Đã thêm {len(new_tokens)} token mới.")
+
+async def clear_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    tokens_table.truncate()
+    await update.message.reply_text("🗑 Đã xoá sạch danh sách Token.")
+
+async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        target_id = int(context.args[0])
+        days = int(context.args[1])
+        expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
+        users_table.upsert({'id': target_id, 'expiry': expiry}, Query().id == target_id)
+        await update.message.reply_text(f"✅ Đã cấp quyền cho <code>{target_id}</code> trong {days} ngày.", parse_mode=ParseMode.HTML)
+    except:
+        await update.message.reply_text("❌ HD: `/grant [ID] [Số ngày]`")
+
+# --- XỬ LÝ TIN NHẮN (QUÉT UID) ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_permission(user_id):
+        await update.message.reply_text("🚫 <b>Bạn không có quyền hoặc hết hạn sử dụng.</b>", parse_mode=ParseMode.HTML)
+        return
+
+    uid = update.message.text.strip()
+    if not uid.isdigit():
+        await update.message.reply_text("⚠️ Vui lòng gửi UID là một dãy số hợp lệ.")
+        return
+
+    sent_msg = await update.message.reply_text("⌛ <b>Đang trích xuất dữ liệu...</b>", parse_mode=ParseMode.HTML)
+    data = request_fb_api(uid)
+
+    if "error_internal" in data or "error" in data:
+        err = data.get("error_internal") or data["error"].get("message")
+        await sent_msg.edit_text(f"❌ <b>Lỗi:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    # --- XỬ LÝ DỮ LIỆU ---
+    def g(field, default="🔒 Ẩn"):
+        return data.get(field, default)
+
+    name = g('name')
+    is_verified = "💎" if data.get("is_verified") else ""
+    gender = {"male": "Nam 👨", "female": "Nữ 👩"}.get(data.get("gender"), "Ẩn 🔒")
+    sub = data.get("subscribers", {}).get("summary", {}).get("total_count", 0)
+    
+    hometown = data.get("hometown", {}).get("name", "N/A")
+    location = data.get("location", {}).get("name", "N/A")
+    work = data.get("work", [{}])[0].get("employer", {}).get("name", "N/A")
+    edu = data.get("education", [{}])[-1].get("school", {}).get("name", "N/A")
+    
+    c_time = g('created_time', 'N/A').split("T")[0]
+    u_time = g('updated_time', 'N/A').split("T")[0]
+
+    # --- GIAO DIỆN HIỂN THỊ ---
+    msg = f"👤 <b>{name.upper()}</b> {is_verified}\n"
+    msg += f"<code>ID: {uid}</code>\n"
+    msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+    msg += f"📅 <b>Ngày tạo:</b> <code>{c_time}</code>\n"
+    msg += f"🎂 <b>Sinh nhật:</b> <code>{g('birthday')}</code>\n"
+    msg += f"⚧ <b>Giới tính:</b> {gender}\n"
+    msg += f"👥 <b>Follower:</b> <code>{sub:,}</code>\n"
+    msg += f"💍 <b>Hôn nhân:</b> {g('relationship_status')}\n"
+    
+    if hometown != "N/A" or location != "N/A":
+        msg += f"<code>────────────────────</code>\n"
+        msg += f"🏠 <b>Quê quán:</b> {hometown}\n"
+        msg += f"📍 <b>Sống tại:</b> {location}\n"
+    
+    if work != "N/A" or edu != "N/A":
+        msg += f"💼 <b>Công việc:</b> {work}\n"
+        msg += f"🎓 <b>Học vấn:</b> {edu}\n"
+
+    msg += f"<code>────────────────────</code>\n"
+    msg += f"🌐 <b>Ngôn ngữ:</b> {g('locale')} (GMT+{g('timezone')})\n"
+    msg += f"📝 <b>Tiểu sử:</b> <i>{g('about', 'Trống')}</i>\n"
+    msg += f"🔗 <a href='https://fb.com/{uid}'><b>MỞ TRANG CÁ NHÂN</b></a>\n"
+    msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+    msg += f"✨ <i>Cập nhật: {u_time}</i>"
+
+    await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 <b>Gửi UID Facebook để kiểm tra thông tin!</b>", parse_mode=ParseMode.HTML)
+
+if __name__ == '__main__':
+    # Chạy Flask Web Server
     threading.Thread(target=run_web, daemon=True).start()
-    run_bot()
+
+    # Chạy Telegram Bot
+    app = ApplicationBuilder().token(TOKEN_BOT).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add", add_token))
+    app.add_handler(CommandHandler("clear", clear_tokens))
+    app.add_handler(CommandHandler("grant", grant_user))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    print("Bot is running...")
+    app.run_polling()
