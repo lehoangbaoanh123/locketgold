@@ -3,6 +3,7 @@ import requests
 import threading
 import datetime
 import os
+import json
 from flask import Flask
 from tinydb import TinyDB, Query
 from telegram import Update
@@ -11,7 +12,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filte
 
 # --- CONFIG ---
 TOKEN_BOT = "8330278397:AAGaoqGXXL_BDca2Kztev2X_O4AOEKW_hGg"
-ADMIN_ID = 8505592726  # <--- THAY ID TELEGRAM CỦA BẠN VÀO ĐÂY
+ADMIN_ID = 8505592726  
 FIELDS = "id,name,first_name,last_name,username,is_verified,birthday,gender,relationship_status,significant_other,hometown,location,work,education,about,quotes,website,subscribers.limit(0),created_time,updated_time,languages,timezone,locale"
 
 # Database
@@ -21,12 +22,10 @@ users_table = db.table('users')
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- WEB SERVER (Để chạy trên Render Web Service) ---
+# --- WEB SERVER (Cho Render) ---
 app_web = Flask(__name__)
-
 @app_web.route('/')
-def home():
-    return "Bot is Running!"
+def home(): return "Bot is Running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 8080))
@@ -45,6 +44,31 @@ def rotate_token():
     if all_t:
         current_token_index = (current_token_index + 1) % len(all_t)
 
+# --- HÀM LẤY UID TỪ URL/USERNAME ---
+def get_fb_uid(input_data):
+    """Chuyển đổi URL/Username sang UID thông qua ffb.vn"""
+    input_data = input_data.strip()
+    
+    # Nếu đã là UID (toàn số) thì trả về luôn
+    if input_data.isdigit():
+        return input_data
+
+    # Xử lý URL
+    if not input_data.startswith("http"):
+        url_to_check = f"https://www.facebook.com/{input_data}"
+    else:
+        url_to_check = input_data
+
+    api_url = "https://ffb.vn/api/tool/get-id-fb"
+    try:
+        response = requests.get(api_url, params={'idfb': url_to_check}, timeout=10)
+        if response.status_code == 200:
+            res_json = response.json()
+            return res_json.get('id') # Trả về UID hoặc None
+    except:
+        pass
+    return None
+
 # --- KIỂM TRA QUYỀN ---
 def check_permission(user_id):
     if user_id == ADMIN_ID: return True
@@ -52,11 +76,10 @@ def check_permission(user_id):
     user = users_table.get(U.id == user_id)
     if user:
         expiry = datetime.datetime.fromisoformat(user['expiry'])
-        if expiry > datetime.datetime.now():
-            return True
+        if expiry > datetime.datetime.now(): return True
     return False
 
-# --- LOGIC FACEBOOK API ---
+# --- LOGIC FACEBOOK GRAPH API ---
 def request_fb_api(uid):
     all_t = get_tokens()
     if not all_t: return {"error_internal": "Hệ thống chưa có Token."}
@@ -91,11 +114,6 @@ async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tokens_table.insert({'value': t})
     await update.message.reply_text(f"✅ Đã thêm {len(new_tokens)} token mới.")
 
-async def clear_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    tokens_table.truncate()
-    await update.message.reply_text("🗑 Đã xoá sạch danh sách Token.")
-
 async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
@@ -107,27 +125,33 @@ async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ HD: `/grant [ID] [Số ngày]`")
 
-# --- XỬ LÝ TIN NHẮN (QUÉT UID) ---
+# --- XỬ LÝ TIN NHẮN CHÍNH ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not check_permission(user_id):
         await update.message.reply_text("🚫 <b>Bạn không có quyền hoặc hết hạn sử dụng.</b>", parse_mode=ParseMode.HTML)
         return
 
-    uid = update.message.text.strip()
-    if not uid.isdigit():
-        await update.message.reply_text("⚠️ Vui lòng gửi UID là một dãy số hợp lệ.")
+    raw_text = update.message.text.strip()
+    sent_msg = await update.message.reply_text("⌛ <b>Đang nhận diện và lấy UID...</b>", parse_mode=ParseMode.HTML)
+
+    # Bước 1: Lấy UID từ input (Link/User/UID)
+    uid = get_fb_uid(raw_text)
+    
+    if not uid:
+        await sent_msg.edit_text("❌ <b>Không tìm thấy UID từ dữ liệu bạn gửi.</b>\nVui lòng kiểm tra lại Link hoặc Username.", parse_mode=ParseMode.HTML)
         return
 
-    sent_msg = await update.message.reply_text("⌛ <b>Đang trích xuất dữ liệu...</b>", parse_mode=ParseMode.HTML)
+    # Bước 2: Truy xuất thông tin từ Facebook API bằng UID
+    await sent_msg.edit_text(f"⌛ <b>Đang quét dữ liệu UID:</b> <code>{uid}</code>...", parse_mode=ParseMode.HTML)
     data = request_fb_api(uid)
 
     if "error_internal" in data or "error" in data:
         err = data.get("error_internal") or data["error"].get("message")
-        await sent_msg.edit_text(f"❌ <b>Lỗi:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
+        await sent_msg.edit_text(f"❌ <b>Lỗi API FB:</b> <code>{err}</code>", parse_mode=ParseMode.HTML)
         return
 
-    # --- XỬ LÝ DỮ LIỆU ---
+    # --- XỬ LÝ DỮ LIỆU HIỂN THỊ ---
     def g(field, default="🔒 Ẩn"):
         return data.get(field, default)
 
@@ -144,7 +168,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c_time = g('created_time', 'N/A').split("T")[0]
     u_time = g('updated_time', 'N/A').split("T")[0]
 
-    # --- GIAO DIỆN HIỂN THỊ ---
     msg = f"👤 <b>{name.upper()}</b> {is_verified}\n"
     msg += f"<code>ID: {uid}</code>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
@@ -164,7 +187,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"🎓 <b>Học vấn:</b> {edu}\n"
 
     msg += f"<code>────────────────────</code>\n"
-    msg += f"🌐 <b>Ngôn ngữ:</b> {g('locale')} (GMT+{g('timezone')})\n"
     msg += f"📝 <b>Tiểu sử:</b> <i>{g('about', 'Trống')}</i>\n"
     msg += f"🔗 <a href='https://fb.com/{uid}'><b>MỞ TRANG CÁ NHÂN</b></a>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
@@ -173,19 +195,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 <b>Gửi UID Facebook để kiểm tra thông tin!</b>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text("👋 <b>Gửi UID, Link hoặc Username FB để check!</b>", parse_mode=ParseMode.HTML)
 
 if __name__ == '__main__':
-    # Chạy Flask Web Server
     threading.Thread(target=run_web, daemon=True).start()
-
-    # Chạy Telegram Bot
     app = ApplicationBuilder().token(TOKEN_BOT).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_token))
-    app.add_handler(CommandHandler("clear", clear_tokens))
     app.add_handler(CommandHandler("grant", grant_user))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    
     print("Bot is running...")
     app.run_polling()
