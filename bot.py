@@ -19,6 +19,7 @@ FIELDS = "id,name,first_name,last_name,username,is_verified,birthday,gender,rela
 db = TinyDB('db.json')
 tokens_table = db.table('tokens')
 users_table = db.table('users')
+usage_table = db.table('usage')  # Bảng lưu số lượt dùng trong ngày
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
@@ -64,25 +65,38 @@ def get_fb_uid(link_fb):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- KIỂM TRA QUYỀN (HỖ TRỢ USERNAME) ---
-def check_permission(update: Update):
-    user_id = update.effective_user.id
-    username = update.effective_user.username
-    
-    if user_id == ADMIN_ID: return True
-    
+# --- LOGIC KIỂM TRA & CẬP NHẬT LƯỢT DÙNG TRONG NGÀY ---
+def check_and_update_limit(user_id, username):
+    if user_id == ADMIN_ID:
+        return True, 99999, 99999 # Admin không giới hạn
+        
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
     U = Query()
-    # Kiểm tra theo ID hoặc Username (không phân biệt chữ hoa thường)
-    user = users_table.get((U.id == user_id) | (U.username == username))
     
-    if user:
-        expiry = datetime.datetime.fromisoformat(user['expiry'])
-        if expiry > datetime.datetime.now():
-            # Nếu họ vào bằng username, cập nhật ID của họ để bảo mật hơn
-            if not user.get('id'):
-                users_table.update({'id': user_id}, (U.username == username))
-            return True
-    return False
+    # Lấy thông tin cấu hình limit cá nhân (nếu có)
+    user_config = users_table.get((U.id == user_id) | (U.username == username))
+    max_limit = 5 # Mặc định ai cũng có 5 lần/ngày
+    
+    if user_config:
+        max_limit = user_config.get('max_limit', 5)
+        # Đồng bộ ID nếu trước đó cấu hình bằng username
+        if not user_config.get('id') and user_id:
+            users_table.update({'id': user_id}, (U.username == username))
+
+    # Đếm số lượt đã dùng hôm nay
+    usage = usage_table.get((U.user_id == user_id) & (U.date == today))
+    current_count = usage['count'] if usage else 0
+    
+    if current_count >= max_limit:
+        return False, current_count, max_limit
+        
+    # Tăng lượt sử dụng lên 1
+    if usage:
+        usage_table.update({'count': current_count + 1}, (U.user_id == user_id) & (U.date == today))
+    else:
+        usage_table.insert({'user_id': user_id, 'date': today, 'count': 1})
+        
+    return True, current_count + 1, max_limit
 
 # --- LOGIC XOAY VÒNG TOKEN ---
 def request_fb_api(uid):
@@ -111,14 +125,28 @@ def request_fb_api(uid):
             
     return {"error_internal": "Tất cả Token đã die hoặc gặp sự cố. Vui lòng liên hệ Admin!"}
 
-# --- XỬ LÝ TIN NHẮN (CHỈ KIỂM TRA THÔNG TIN) ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Kiểm tra quyền
-    if not check_permission(update):
-        await update.message.reply_text("🚫 <b>Liên hệ cho admin @lhba5510 để cấp quyền.</b>", parse_mode=ParseMode.HTML)
+# --- XỬ LÝ LỆNH /INFOFB ---
+async def handle_infofb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    
+    # 1. Kiểm tra tham số truyền vào lệnh
+    if not context.args:
+        await update.message.reply_text("❌ <b>Vui lòng nhập UID hoặc Link!</b>\n👉 Cú pháp: <code>/infofb [uid hoặc link]</code>", parse_mode=ParseMode.HTML)
         return
 
-    raw_input = update.message.text.strip()
+    raw_input = context.args[0].strip()
+    
+    # 2. Kiểm tra giới hạn lượt check trong ngày
+    allowed, current, maximum = check_and_update_limit(user_id, username)
+    if not allowed:
+        await update.message.reply_text(
+            f"🚫 <b>Bạn đã hết lượt check của ngày hôm nay ({current}/{maximum}).</b>\n"
+            f"💡 Muốn tăng thêm limit, vui lòng inbox cho admin @lhba5510 để nâng cấp!", 
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     sent_msg = await update.message.reply_text("⌛ <b>Đang trích xuất dữ liệu...</b>", parse_mode=ParseMode.HTML)
 
     if raw_input.isdigit():
@@ -175,13 +203,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"📝 <b>Tiểu sử:</b> <i>{g('about', 'Trống')}</i>\n"
     msg += f"🔗 <a href='https://fb.com/{uid}'><b>MỞ TRANG CÁ NHÂN</b></a>\n"
     msg += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+    msg += f"📊 <b>Lượt check hôm nay:</b> <code>{current}/{maximum if maximum < 99999 else 'Vô hạn'}</code>\n"
     msg += f"✨ <i>Cập nhật: {u_time}</i>"
 
     await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 # --- COMMANDS ADMIN ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 <b>Gửi UID/Link Facebook để check!</b>", parse_mode=ParseMode.HTML)
+    await update.message.reply_text("👋 <b>Gửi lệnh theo cú pháp để tra cứu thông tin:</b>\n👉 <code>/infofb [UID hoặc Link Facebook]</code>\n\n📌 <i>Mỗi người dùng có sẵn 5 lượt check miễn phí mỗi ngày!</i>", parse_mode=ParseMode.HTML)
 
 async def add_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -193,25 +222,24 @@ async def clear_tokens(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tokens_table.truncate()
     await update.message.reply_text("🗑 <b>Đã xoá sạch danh sách Token.</b>", parse_mode=ParseMode.HTML)
 
-# Cải tiến lệnh GRANT hỗ trợ @username
+# Cải tiến lệnh GRANT hỗ trợ thay đổi số lượt Limit tối đa trong ngày
 async def grant_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
         user_input = context.args[0] # Có thể là ID hoặc @username
-        days = int(context.args[1])
-        expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).isoformat()
+        max_limit = int(context.args[1]) # Số lượt tối đa mỗi ngày mới
         
         U = Query()
         if user_input.startswith("@"):
             username = user_input.replace("@", "")
-            users_table.upsert({'username': username, 'expiry': expiry}, U.username == username)
-            await update.message.reply_text(f"✅ Đã cấp quyền cho <b>{user_input}</b> trong {days} ngày.", parse_mode=ParseMode.HTML)
+            users_table.upsert({'username': username, 'max_limit': max_limit}, U.username == username)
+            await update.message.reply_text(f"✅ Đã cấu hình limit cho <b>{user_input}</b> thành {max_limit} lần/ngày.", parse_mode=ParseMode.HTML)
         else:
             t_id = int(user_input)
-            users_table.upsert({'id': t_id, 'expiry': expiry}, U.id == t_id)
-            await update.message.reply_text(f"✅ Đã cấp quyền cho ID <code>{t_id}</code> trong {days} ngày.", parse_mode=ParseMode.HTML)
+            users_table.upsert({'id': t_id, 'max_limit': max_limit}, U.id == t_id)
+            await update.message.reply_text(f"✅ Đã cấu hình limit cho ID <code>{t_id}</code> thành {max_limit} lần/ngày.", parse_mode=ParseMode.HTML)
     except:
-        await update.message.reply_text("❌ HD: `/grant [ID hoặc @username] [Số ngày]`")
+        await update.message.reply_text("❌ HD: `/grant [ID hoặc @username] [Số lượt tối đa/ngày]`")
 
 if __name__ == '__main__':
     threading.Thread(target=run_web, daemon=True).start()
@@ -220,6 +248,6 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("add", add_token))
     app.add_handler(CommandHandler("clear", clear_tokens))
     app.add_handler(CommandHandler("grant", grant_user))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    app.add_handler(CommandHandler("infofb", handle_infofb)) # Chuyển sang bắt lệnh độc lập thay vì bắt mọi tin nhắn chữ
     print("Bot is running...")
     app.run_polling()
