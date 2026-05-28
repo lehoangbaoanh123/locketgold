@@ -272,15 +272,15 @@ async def handle_sll(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 uid_data = get_fb_uid(item)
                 uid = uid_data.get('id')
                 if not uid:
-                    result_text += f"{idx}. <code>{item}</code> ❌ Lỗi lấy UID\n"
+                    result_text += f"{idx}. <code>{item}</code> > uid die\n"
                     continue
             
             # Gửi API Facebook
             data = request_fb_api(uid)
             if "error_internal" in data:
-                result_text += f"{idx}. <code>{uid}</code> ⚠️ Lỗi hệ thống: {data['error_internal']}\n"
+                result_text += f"{idx}. <code>{uid}</code> > uid die\n"
             elif "error" in data:
-                result_text += f"{idx}. <code>{uid}</code> ❌ Lỗi API FB\n"
+                result_text += f"{idx}. <code>{uid}</code> > uid die\n"
             else:
                 name = data.get('name', 'Ẩn').upper()
                 gender = {"male": "Nam 👨", "female": "Nữ 👩"}.get(data.get("gender"), "Ẩn 🔒")
