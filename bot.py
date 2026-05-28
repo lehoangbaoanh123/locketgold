@@ -66,7 +66,7 @@ def get_fb_uid(link_fb):
         return {"status": "error", "message": str(e)}
 
 # --- LOGIC KIỂM TRA & CẬP NHẬT LƯỢT DÙNG TRONG NGÀY ---
-def check_and_update_limit(user_id, username):
+def check_and_update_limit(user_id, username, bulk_count=1):
     if user_id == ADMIN_ID:
         return True, 99999, 99999 # Admin không giới hạn
         
@@ -87,16 +87,16 @@ def check_and_update_limit(user_id, username):
     usage = usage_table.get((U.user_id == user_id) & (U.date == today))
     current_count = usage['count'] if usage else 0
     
-    if current_count >= max_limit:
+    if current_count + bulk_count > max_limit:
         return False, current_count, max_limit
         
-    # Tăng lượt sử dụng lên 1
+    # Tăng lượt sử dụng lên bulk_count
     if usage:
-        usage_table.update({'count': current_count + 1}, (U.user_id == user_id) & (U.date == today))
+        usage_table.update({'count': current_count + bulk_count}, (U.user_id == user_id) & (U.date == today))
     else:
-        usage_table.insert({'user_id': user_id, 'date': today, 'count': 1})
+        usage_table.insert({'user_id': user_id, 'date': today, 'count': bulk_count})
         
-    return True, current_count + 1, max_limit
+    return True, current_count + bulk_count, max_limit
 
 # --- LOGIC XOAY VÒNG TOKEN ---
 def request_fb_api(uid):
@@ -208,6 +208,95 @@ async def handle_infofb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await sent_msg.edit_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
+# --- XỬ LÝ LỆNH /SLL (CHECK FILE SỐ LƯỢNG LỚN) ---
+async def handle_sll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    
+    # Kiểm tra xem người dùng có quyền check số lượng lớn không (Phải là Admin hoặc được cấu hình max_limit cao, ví dụ >= 100)
+    U = Query()
+    user_config = users_table.get((U.id == user_id) | (U.username == username))
+    max_limit = user_config.get('max_limit', 5) if user_config else 5
+    
+    if user_id != ADMIN_ID and max_limit < 100:
+        await update.message.reply_text("🚫 <b>Bạn không có quyền sử dụng chức năng check Số Lượng Lớn.</b>\nVui lòng liên hệ Admin để nâng cấp quyền!", parse_mode=ParseMode.HTML)
+        return
+
+    # Kiểm tra xem người dùng có reply kèm file không
+    if not update.message.document:
+        await update.message.reply_text("❌ <b>Vui lòng gửi đính kèm file .txt chứa danh sách UID/Link Facebook!</b>\n👉 Cú pháp: Nhấp chọn File -> Thêm caption là <code>/sll</code>", parse_mode=ParseMode.HTML)
+        return
+
+    doc = update.message.document
+    if not doc.file_name.endswith('.txt'):
+        await update.message.reply_text("❌ Hệ thống chỉ hỗ trợ xử lý file định dạng <code>.txt</code>", parse_mode=ParseMode.HTML)
+        return
+
+    sent_msg = await update.message.reply_text("⏳ <b>Đang tải và xử lý file... Vui lòng đợi.</b>", parse_mode=ParseMode.HTML)
+    
+    try:
+        # Tải file từ Telegram
+        tg_file = await context.bot.get_file(doc.file_id)
+        file_bytes = await tg_file.download_as_bytearray()
+        content = file_bytes.decode('utf-8')
+        
+        # Đọc danh sách các dòng trong file
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if not lines:
+            await sent_msg.edit_text("❌ File trống hoặc không đọc được dữ liệu hợp lệ.")
+            return
+
+        total_lines = len(lines)
+        
+        # Kiểm tra trước số lượng giới hạn còn lại trong ngày (Nếu không phải admin)
+        allowed, current, maximum = check_and_update_limit(user_id, username, bulk_count=total_lines)
+        if not allowed:
+            await sent_msg.edit_text(
+                f"🚫 <b>File của bạn có {total_lines} dòng, vượt quá số lượng check còn lại trong ngày của bạn.</b>\n"
+                f"📊 Hiện tại đã dùng: <code>{current}/{maximum}</code>", 
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        # Tiến hành quét thông tin theo danh sách
+        result_text = "📊 <b>KẾT QUẢ CHECK FILE SỐ LƯỢNG LỚN</b>\n"
+        result_text += f"📁 File: <code>{doc.file_name}</code> (Tổng: {total_lines})\n"
+        result_text += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+        
+        success_count = 0
+        for idx, item in enumerate(lines, start=1):
+            # Lấy UID
+            if item.isdigit():
+                uid = item
+            else:
+                uid_data = get_fb_uid(item)
+                uid = uid_data.get('id')
+                if not uid:
+                    result_text += f"{idx}. <code>{item}</code> ❌ Lỗi lấy UID\n"
+                    continue
+            
+            # Gửi API Facebook
+            data = request_fb_api(uid)
+            if "error_internal" in data:
+                result_text += f"{idx}. <code>{uid}</code> ⚠️ Lỗi hệ thống: {data['error_internal']}\n"
+            elif "error" in data:
+                result_text += f"{idx}. <code>{uid}</code> ❌ Lỗi API FB\n"
+            else:
+                name = data.get('name', 'Ẩn').upper()
+                gender = {"male": "Nam 👨", "female": "Nữ 👩"}.get(data.get("gender"), "Ẩn 🔒")
+                sub = data.get("subscribers", {}).get("summary", {}).get("total_count", 0)
+                result_text += f"{idx}. 👤 <b>{name}</b> | ID: <code>{uid}</code> | {gender} | 👥 {sub:,} follow\n"
+                success_count += 1
+
+        result_text += f"<code>━━━━━━━━━━━━━━━━━━━━</code>\n"
+        result_text += f"✅ Đã check thành công <b>{success_count}/{total_lines}</b> tài khoản."
+        
+        # Gửi lại kết quả đầy đủ cho người dùng
+        await sent_msg.edit_text(result_text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+    except Exception as e:
+        await sent_msg.edit_text(f"❌ <b>Đã có lỗi xảy ra trong quá trình xử lý file:</b> <code>{str(e)}</code>", parse_mode=ParseMode.HTML)
+
 # --- COMMANDS ADMIN ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 <b>Gửi lệnh theo cú pháp để tra cứu thông tin:</b>\n👉 <code>/infofb [UID hoặc Link Facebook]</code>\n\n📌 <i>Mỗi người dùng có sẵn 5 lượt check miễn phí mỗi ngày!</i>", parse_mode=ParseMode.HTML)
@@ -248,6 +337,10 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("add", add_token))
     app.add_handler(CommandHandler("clear", clear_tokens))
     app.add_handler(CommandHandler("grant", grant_user))
-    app.add_handler(CommandHandler("infofb", handle_infofb)) # Chuyển sang bắt lệnh độc lập thay vì bắt mọi tin nhắn chữ
+    app.add_handler(CommandHandler("infofb", handle_infofb)) 
+    
+    # Đăng ký handler xử lý file đính kèm kèm caption lệnh /sll
+    app.add_handler(MessageHandler(filters.Document.ALL & filters.Caption(["/sll"]), handle_sll))
+    
     print("Bot is running...")
     app.run_polling()
